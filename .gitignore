@@ -1,7 +1,28 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# IDE
 .idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Secrets & credentials
 .env
+.env.*
 oauth_client.json
 token.json
+
+# OS files
+.DS_Store
+Thumbs.db

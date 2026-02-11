@@ -242,7 +242,7 @@
         }
 
         .node-name {
-            font-size: 13px !important;
+            font-size: 14px !important;
             font-weight: 700 !important;
             fill: #111827 !important;
         }
@@ -366,13 +366,47 @@
 // CONFIGURATION
 // =======================================================
 
+// Top-level whitelist - employees in this list will appear at top level regardless of their manager
+const TOP_LEVEL_WHITELIST = [
+    "Kanishka Tongya",
+    "Jagmeet Singh",
+    "SP Yadav"
+];
+
+// Employees in these departments will be completely hidden
+const DEPT_BLACKLIST = [
+    "Third Party Installer",
+    "Operations- Installer Dedicated",
+    "Operations- Installer Non-Dedicated",
+    "Operations- Installer",
+    "Test-Department-prime-Chat",
+    "Testing_department"
+];
+
+// Grade order for sorting children
+const gradeOrder = ['T-2', 'T-1', 'P-4', 'P-3', 'P-2', 'P-1', 'D-3', 'D-2', 'D-1',
+                    'S-3', 'S-2', 'S-1', 'M-3', 'M-2', 'M-1', 'E-3', 'E-2', 'E-1', 'I'];
+
+// Function to normalize grade (remove A/B suffix)
+function normalizeGrade(grade) {
+    if (!grade) return 'UNKNOWN';
+    return grade.toString().replace(/[AB]$/i, '').trim();
+}
+
+// Function to get grade order index
+function getGradeIndex(grade) {
+    const normalized = normalizeGrade(grade);
+    const index = gradeOrder.indexOf(normalized);
+    return index === -1 ? 999 : index; // Unknown grades go to the end
+}
+
 // Chart dimensions
 const HEADER_HEIGHT = 70; // Must match --header-height in CSS
 const width = window.innerWidth;
 const height = window.innerHeight - HEADER_HEIGHT;
-const nodeWidth = 280;
-const nodeHeight = 100;
-const verticalSpacing = 140;
+const nodeWidth = 255;  // Same as Google Sheets version
+const nodeHeight = 127.5;  // Same as Google Sheets version
+const verticalSpacing = 180;
 const horizontalSpacing = 300;
 
 // Global variables
@@ -454,7 +488,7 @@ function initialize() {
 }
 
 // =======================================================
-// DATA LOADING - Using API endpoint from Code 2
+// DATA LOADING - Using Flask API endpoint
 // =======================================================
 function loadAndRenderData() {
     document.getElementById('loading').style.display = 'block';
@@ -469,9 +503,8 @@ function loadAndRenderData() {
         }
 
         console.log("Data loaded:", data.length, "records");
-        console.log("Raw Data Example:", data[0]); // Check console for field names
 
-        // Build hierarchy
+        // Build hierarchy with whitelist/blacklist support
         const hierarchyData = buildHierarchy(data);
 
         // Create root
@@ -504,7 +537,7 @@ function loadAndRenderData() {
             .attr("width", logoWidth)
             .attr("height", logoHeight)
             .attr("x", root.x - (logoWidth / 2))
-            .attr("y", root.y - (logoHeight / 4));
+            .attr("y", root.y - (logoHeight / 3));
         // ------------------------------
 
         // Center on root
@@ -563,13 +596,10 @@ function manualRefresh() {
 }
 
 // =======================================================
-// BUILD HIERARCHY - Robust version from Code 2
+// BUILD HIERARCHY - Integrated version with whitelist/blacklist
 // =======================================================
 function buildHierarchy(data) {
-    const nameToEmployees = new Map();
-    const employeeMap = new Map();
-
-    // 1. Normalize Keys (Handle Case Sensitivity)
+    // Normalize field names (handle case sensitivity)
     const cleanData = data.map(row => {
         const newRow = {};
         Object.keys(row).forEach(k => {
@@ -578,18 +608,17 @@ function buildHierarchy(data) {
         return newRow;
     });
 
-    // 2. Build employee map - try multiple field name variations
+    // First pass: Create name-to-employee mapping
+    const nameToEmployees = new Map();
+    const employeeMap = new Map();
+
     cleanData.forEach(row => {
-        // Try multiple variations of "Name"
-        const name = (row['name'] || row['employee name'] || row['emp name'] || "Unknown").toString().trim();
+        // Try multiple variations of field names
+        const name = (row['name'] || row['employee name'] || row['emp name'] || "").toString().trim();
         const id = (row['id'] || row['employee id'] || row['emp id'] || row['empid'] || Math.random()).toString().trim();
         const empid = (row['empid'] || row['employee id'] || row['emp id'] || id).toString().trim();
-
-        // Try multiple variations of "Reporting Manager"
-        const managerName = (row['reporting manager'] || row['manager'] || row['reporting_manager'] || "-").toString().trim();
-
-        // Try to get remark field
         const remark = (row['remark'] || row['remarks'] || "").toString().trim();
+        const department = (row['department name'] || row['department'] || row['dept'] || "").toString().trim();
 
         // Skip employees with Remark = "No"
         if (remark.toLowerCase() === "no") {
@@ -597,22 +626,71 @@ function buildHierarchy(data) {
             return;
         }
 
-        if (name && name !== "Unknown") {
+        // Skip employees in Blacklisted Departments
+        if (DEPT_BLACKLIST.includes(department)) {
+            console.log(`Skipping employee ${name} (${empid}) - Department '${department}' is blacklisted`);
+            return;
+        }
+
+        if (name && name !== "") {
+            // Handle duplicate names by storing arrays
             if (!nameToEmployees.has(name)) {
                 nameToEmployees.set(name, []);
             }
-            nameToEmployees.get(name).push({ id, name });
+            nameToEmployees.get(name).push({ id, empid, name });
+        }
+    });
+
+    // Second pass: Create employee map using ID as key
+    cleanData.forEach(row => {
+        const name = (row['name'] || row['employee name'] || row['emp name'] || "").toString().trim();
+        const id = (row['id'] || row['employee id'] || row['emp id'] || row['empid'] || Math.random()).toString().trim();
+        const empid = (row['empid'] || row['employee id'] || row['emp id'] || id).toString().trim();
+        const remark = (row['remark'] || row['remarks'] || "").toString().trim();
+        const department = (row['department name'] || row['department'] || row['dept'] || "").toString().trim();
+
+        // Skip employees with Remark = "No"
+        if (remark.toLowerCase() === "no") {
+            return;
+        }
+
+        // Skip employees in Blacklisted Departments
+        if (DEPT_BLACKLIST.includes(department)) {
+            return;
+        }
+
+        if (!name || name === "") return;
+
+        const managerName = (row['reporting manager'] || row['manager'] || row['reporting_manager'] || "-").toString().trim();
+        let managerId = "-";
+
+        // Try to find manager ID
+        if (managerName !== "-" && managerName !== "") {
+            const potentialManagers = nameToEmployees.get(managerName);
+
+            if (potentialManagers && potentialManagers.length === 1) {
+                // Only one person with this name - safe to use
+                managerId = potentialManagers[0].id;
+            } else if (potentialManagers && potentialManagers.length > 1) {
+                // Multiple people with same name - log warning
+                console.warn(`Multiple managers found with name "${managerName}" for employee ${name} (${empid}). Using first match.`);
+                managerId = potentialManagers[0].id;
+            } else {
+                // Manager name not found
+                console.warn(`Manager "${managerName}" not found for employee ${name} (${empid})`);
+            }
         }
 
         employeeMap.set(id, {
             id: id,
             name: name,
             empid: empid,
-            department: row['department name'] || row['department'] || row['dept'] || "",
+            department: department,
             designation: row['designation'] || row['position'] || row['title'] || "",
             grade: row['grade'] || row['level'] || "",
+            location: row['base city'] || row['location'] || "",
             managerName: managerName,
-            managerId: "-",
+            managerId: managerId,
             email: row['email'] || "",
             mobile: row['mobileno'] || row['mobile'] || row['phone'] || "",
             doj: row['doj'] || row['date of joining'] || "",
@@ -621,42 +699,46 @@ function buildHierarchy(data) {
         });
     });
 
-    // 3. Link Managers
-    employeeMap.forEach(emp => {
-        if (emp.managerName && emp.managerName !== "-" && nameToEmployees.has(emp.managerName)) {
-            const matches = nameToEmployees.get(emp.managerName);
-            if (matches.length === 1) {
-                emp.managerId = matches[0].id;
-            } else if (matches.length > 1) {
-                console.warn(`Multiple managers found with name "${emp.managerName}" for employee ${emp.name} (${emp.empid}). Using first match.`);
-                emp.managerId = matches[0].id;
-            }
-        }
-    });
-
-    // 4. Build parent-child relationships
+    // Find top-level managers (those with "-" as manager OR in whitelist)
     const topManagers = [];
     const assignedEmployees = new Set();
 
     employeeMap.forEach((employee, id) => {
-        // If no manager or manager doesn't exist, it's a top-level employee
-        if (employee.managerId === "-" || !employeeMap.has(employee.managerId) || employee.managerId === employee.id) {
+        // Check if employee is in whitelist OR has "-" as manager
+        const isInWhitelist = TOP_LEVEL_WHITELIST.includes(employee.name);
+        const hasNoManager = employee.managerId === "-" || employee.managerId === undefined;
+
+        if (isInWhitelist || hasNoManager) {
             topManagers.push(employee);
             assignedEmployees.add(id);
-        } else {
-            const manager = employeeMap.get(employee.managerId);
-            if (manager) {
-                manager.children.push(employee);
-                assignedEmployees.add(id);
+
+            if (isInWhitelist) {
+                console.log(`Adding ${employee.name} to top level (whitelist)`);
             }
         }
     });
 
     console.log("Top managers:", topManagers.length);
-    console.log("Total employees processed:", employeeMap.size);
-    console.log("Employees in hierarchy:", assignedEmployees.size);
 
-    // Handle orphaned employees
+    // Build parent-child relationships using IDs
+    employeeMap.forEach((employee, id) => {
+        if (employee.managerId !== "-" && employee.managerId !== undefined) {
+            // Skip if this employee is in the whitelist (already at top level)
+            if (TOP_LEVEL_WHITELIST.includes(employee.name)) {
+                return;
+            }
+
+            const manager = employeeMap.get(employee.managerId);
+            if (manager) {
+                manager.children.push(employee);
+                assignedEmployees.add(id);
+            } else {
+                console.warn("Manager not found:", employee.managerName, "(ID lookup failed) for employee:", employee.name);
+            }
+        }
+    });
+
+    // Handle orphaned employees (those whose manager doesn't exist)
     const orphans = [];
     employeeMap.forEach((employee, id) => {
         if (!assignedEmployees.has(id)) {
@@ -669,6 +751,10 @@ function buildHierarchy(data) {
         console.warn("Orphaned employee names:", orphans.map(e => e.name));
     }
 
+    console.log("Total employees processed:", employeeMap.size);
+    console.log("Employees in hierarchy:", assignedEmployees.size);
+    console.log("Missing from chart:", employeeMap.size - assignedEmployees.size);
+
     // Create virtual root
     const rootNode = {
         name: "Organization",
@@ -676,11 +762,41 @@ function buildHierarchy(data) {
         children: topManagers
     };
 
+    // Sort all children by grade recursively
+    function sortChildrenByGrade(node) {
+        if (node.children && node.children.length > 0) {
+            // Helper function to count total descendants
+            function countAllDescendants(emp) {
+                if (!emp.children || emp.children.length === 0) return 0;
+                let count = emp.children.length;
+                emp.children.forEach(child => {
+                    count += countAllDescendants(child);
+                });
+                return count;
+            }
+
+            // Sort children by grade order, then by descendant count
+            node.children.sort((a, b) => {
+                // Primary sort: by grade
+                const gradeCompare = getGradeIndex(a.grade) - getGradeIndex(b.grade);
+                if (gradeCompare !== 0) return gradeCompare;
+
+                // Secondary sort: by descendant count (descending - higher count first)
+                return countAllDescendants(b) - countAllDescendants(a);
+            });
+
+            // Recursively sort children's children
+            node.children.forEach(child => sortChildrenByGrade(child));
+        }
+    }
+
+    sortChildrenByGrade(rootNode);
+
     return rootNode;
 }
 
 // =======================================================
-// UPDATE CHART - Enhanced from Code 1
+// UPDATE CHART - Using 5-item vertical layout from Google Sheets version
 // =======================================================
 function update(source) {
     // Compute the new tree layout
@@ -701,11 +817,10 @@ function update(source) {
             update(d);
         })
         .on("mousedown", function(event) {
-            // Prevent drag from starting on node click
             event.stopPropagation();
         });
 
-    // Add card rectangle
+    // 1. CARD BACKGROUND
     nodeEnter.append("rect")
         .attr("width", nodeWidth)
         .attr("height", nodeHeight)
@@ -713,120 +828,101 @@ function update(source) {
         .attr("y", -nodeHeight / 2)
         .style("fill", d => d._children ? "#fef3c7" : "#fff");
 
-    // Add name at top
+    // 2. NAME (Header)
     nodeEnter.append("text")
         .attr("class", "node-name")
-        .attr("dy", -nodeHeight / 2 + 18)
+        .attr("dy", -nodeHeight / 2 + 20)
         .attr("text-anchor", "middle")
         .text(d => d.data.name)
         .style("fill-opacity", 1e-6);
 
-    // Add separator line
+    // 3. SEPARATOR LINE
     nodeEnter.append("line")
-        .attr("x1", -nodeWidth / 2 + 10)
-        .attr("x2", nodeWidth / 2 - 10)
-        .attr("y1", -nodeHeight / 2 + 28)
-        .attr("y2", -nodeHeight / 2 + 28)
+        .attr("x1", -nodeWidth / 2 + 20)
+        .attr("x2", nodeWidth / 2 - 20)
+        .attr("y1", -nodeHeight / 2 + 35)
+        .attr("y2", -nodeHeight / 2 + 35)
         .attr("stroke", "#e5e7eb")
         .attr("stroke-width", 1);
 
-    // Left column - Emp ID
+    // --- 5-ITEM VERTICAL LIST (Same as Google Sheets version) ---
+
+    // Item 1: Department
     nodeEnter.append("text")
         .attr("class", "node-label")
-        .attr("x", -nodeWidth / 2 + 15)
-        .attr("y", -nodeHeight / 2 + 45)
-        .attr("text-anchor", "start")
-        .text("ID:")
-        .style("fill-opacity", 1e-6);
-
-    nodeEnter.append("text")
-        .attr("class", "node-value")
-        .attr("x", -nodeWidth / 2 + 15)
-        .attr("y", -nodeHeight / 2 + 57)
-        .attr("text-anchor", "start")
-        .text(d => d.data.empid || "-")
-        .style("fill-opacity", 1e-6);
-
-    // Left column - Department
-    nodeEnter.append("text")
-        .attr("class", "node-label")
-        .attr("x", -nodeWidth / 2 + 15)
-        .attr("y", -nodeHeight / 2 + 72)
-        .attr("text-anchor", "start")
-        .text("Dept:")
-        .style("fill-opacity", 1e-6);
-
-    nodeEnter.append("text")
-        .attr("class", "node-value")
-        .attr("x", -nodeWidth / 2 + 15)
-        .attr("y", -nodeHeight / 2 + 84)
-        .attr("text-anchor", "start")
+        .attr("x", 0)
+        .attr("y", -12)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-weight", "500")
+        .style("fill", "#4b5563")
         .text(d => {
-            const dept = d.data.department || "-";
-            return dept.length > 22 ? dept.substring(0, 22) + "..." : dept;
+            const val = d.data.department || "-";
+            return `${val.length > 28 ? val.substring(0, 28) + "..." : val}`;
         })
         .style("fill-opacity", 1e-6);
 
-    // Right column - Grade
+    // Item 2: Designation
     nodeEnter.append("text")
         .attr("class", "node-label")
-        .attr("x", nodeWidth / 2 - 15)
-        .attr("y", -nodeHeight / 2 + 45)
-        .attr("text-anchor", "end")
-        .text("Grade:")
-        .style("fill-opacity", 1e-6);
-
-    nodeEnter.append("text")
-        .attr("class", "node-value")
-        .attr("x", nodeWidth / 2 - 15)
-        .attr("y", -nodeHeight / 2 + 57)
-        .attr("text-anchor", "end")
-        .text(d => d.data.grade || "-")
-        .style("fill-opacity", 1e-6);
-
-    // Right column - Designation
-    nodeEnter.append("text")
-        .attr("class", "node-label")
-        .attr("x", nodeWidth / 2 - 15)
-        .attr("y", -nodeHeight / 2 + 72)
-        .attr("text-anchor", "end")
-        .text("Designation:")
-        .style("fill-opacity", 1e-6);
-
-    nodeEnter.append("text")
-        .attr("class", "node-value")
-        .attr("x", nodeWidth / 2 - 15)
-        .attr("y", -nodeHeight / 2 + 84)
-        .attr("text-anchor", "end")
+        .attr("x", 0)
+        .attr("y", 4)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-weight", "500")
+        .style("fill", "#4b5563")
         .text(d => {
-            const desig = d.data.designation || "-";
-            return desig.length > 28 ? desig.substring(0, 28) + "..." : desig;
+            const val = d.data.designation || "-";
+            return `${val.length > 28 ? val.substring(0, 28) + "..." : val}`;
         })
+        .style("fill-opacity", 1e-6)
+        .append("title")
+        .text(d => d.data.designation);
+
+    // Item 3: Grade
+    nodeEnter.append("text")
+        .attr("class", "node-label")
+        .attr("x", 0)
+        .attr("y", 20)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-weight", "500")
+        .style("fill", "#4b5563")
+        .text(d => `Grade: ${d.data.grade || "-"}`)
         .style("fill-opacity", 1e-6);
 
-    // Add count badge for collapsed nodes (top right corner)
+    // Item 4: Location with icon
+    nodeEnter.append("text")
+        .attr("class", "node-label")
+        .attr("x", 0)
+        .attr("y", 36)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-weight", "500")
+        .style("fill", "#4b5563")
+        .text(d => `📍 ${d.data.location || "-"}`)
+        .style("fill-opacity", 1e-6);
+
+    // --- END LIST ---
+
+    // Count badge logic
     const badgeGroup = nodeEnter.append("g")
         .attr("class", "badge-group")
-        .attr("transform", `translate(${nodeWidth / 2 - 28}, ${-nodeHeight / 2 + 15})`)
+        .attr("transform", `translate(${nodeWidth / 2 - 28}, ${-nodeHeight / 2 + 20})`)
         .style("opacity", d => d._children ? 1 : 0);
 
     badgeGroup.append("circle")
         .attr("class", "count-badge-bg")
-        .attr("r", 14);
+        .attr("r", 15);
 
     badgeGroup.append("text")
         .attr("class", "count-badge")
         .attr("dy", "0.35em")
         .attr("text-anchor", "middle")
-        .text(d => {
-            if (d._children) {
-                return `+${countDescendants(d)}`;
-            }
-            return "";
-        })
+        .text(d => d._children ? `+${countDescendants(d)}` : "")
         .style("fill-opacity", 1e-6);
 
-    // Update existing nodes
+    // Transitions and updates
     const nodeUpdate = nodeEnter.merge(node);
 
     nodeUpdate.transition()
@@ -838,35 +934,21 @@ function update(source) {
         .style("stroke", d => d._children ? "#f59e0b" : "#667eea")
         .attr("class", d => d._children ? "collapsed" : "");
 
-    nodeUpdate.selectAll("text")
-        .style("fill-opacity", 1);
+    nodeUpdate.selectAll("text").style("fill-opacity", 1);
 
-    nodeUpdate.select(".badge-group")
-        .style("opacity", d => d._children ? 1 : 0);
+    nodeUpdate.select(".badge-group").style("opacity", d => d._children ? 1 : 0);
+    nodeUpdate.select(".badge-group .count-badge").text(d => d._children ? `+${countDescendants(d)}` : "");
 
-    nodeUpdate.select(".badge-group .count-badge")
-        .text(d => {
-            if (d._children) {
-                return `+${countDescendants(d)}`;
-            }
-            return "";
-        });
-
-    // Remove exiting nodes
     const nodeExit = node.exit().transition()
         .duration(750)
         .attr("transform", d => `translate(${source.x},${source.y})`)
         .remove();
 
-    nodeExit.select("rect")
-        .style("opacity", 1e-6);
-
-    nodeExit.selectAll("text")
-        .style("fill-opacity", 1e-6);
+    nodeExit.select("rect").style("opacity", 1e-6);
+    nodeExit.selectAll("text").style("fill-opacity", 1e-6);
 
     // Update links
-    const link = g.selectAll(".link")
-        .data(links, d => d.target.data.name + d.target.data.id);
+    const link = g.selectAll(".link").data(links, d => d.target.data.name + d.target.data.id);
 
     const linkEnter = link.enter().insert("path", "g")
         .attr("class", "link")
@@ -876,20 +958,13 @@ function update(source) {
 
     const linkUpdate = linkEnter.merge(link);
 
-    linkUpdate.transition()
-        .duration(750)
-        .attr("d", d3.linkVertical()
-            .x(d => d.x)
-            .y(d => d.y));
+    linkUpdate.transition().duration(750).attr("d", d3.linkVertical().x(d => d.x).y(d => d.y));
 
     link.exit().transition()
         .duration(750)
-        .attr("d", d3.linkVertical()
-            .x(d => source.x)
-            .y(d => source.y))
+        .attr("d", d3.linkVertical().x(d => source.x).y(d => source.y))
         .remove();
 
-    // Store old positions
     nodes.forEach(d => {
         d.x0 = d.x;
         d.y0 = d.y;
@@ -965,7 +1040,21 @@ function collapseAll() {
 }
 
 function resetZoom() {
-    centerNode(root);
+    // Stop ALL ongoing transitions more aggressively
+    svg.selectAll("*").interrupt();
+    svg.interrupt();
+    d3.selectAll("*").interrupt();
+
+    // Center on root with scale 1.0 and shifted upwards
+    const scale = 1.0;
+    const x = -root.x * scale + width / 2;
+    const y = -root.y * scale + 40;  // 60px upwards from 100
+
+    // Apply transform with transition
+    svg.transition()
+        .duration(750)
+        .call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+
     d3.select("#chart").style("cursor", "grab");
 }
 
@@ -1115,71 +1204,95 @@ document.addEventListener('keydown', function(e) {
 
     const key = e.key.toLowerCase();
 
+    // Handle C and R shortcuts
     if (key === 'c') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         collapseAll();
+        return false;
     } else if (key === 'r') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         resetZoom();
+        return false;
     }
 
-    // Arrow key navigation
+    // Handle arrow keys for panning
     if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key)) {
-        e.preventDefault();
+        e.preventDefault(); // Prevent default scrolling behavior
 
+        // Get current transform
         const currentTransform = d3.zoomTransform(svg.node());
+
+        // Define pan distance
         const panDistance = 30;
 
+        // Calculate new translation based on arrow key
         let newX = currentTransform.x;
         let newY = currentTransform.y;
 
-        switch(key) {
-            case 'arrowleft':
+        switch(e.key) {
+            case 'ArrowLeft':
                 newX += panDistance;
                 break;
-            case 'arrowright':
+            case 'ArrowRight':
                 newX -= panDistance;
                 break;
-            case 'arrowup':
+            case 'ArrowUp':
                 newY += panDistance;
                 break;
-            case 'arrowdown':
+            case 'ArrowDown':
                 newY -= panDistance;
                 break;
         }
 
+        // Apply the new transform
         svg.call(zoom.transform, d3.zoomIdentity
             .translate(newX, newY)
             .scale(currentTransform.k));
+        return false;
     }
 
-    // Zoom with + and - keys
+    // Handle + or - keys for zooming
     if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
-        e.preventDefault();
+        e.preventDefault(); // Prevent default browser zoom
 
+        // Get current transform
         const currentTransform = d3.zoomTransform(svg.node());
+
+        // Define zoom factor
         const zoomFactor = 1.2;
         let newScale = currentTransform.k;
 
+        // Calculate new scale
         if (e.key === '+' || e.key === '=') {
             newScale = currentTransform.k * zoomFactor;
         } else if (e.key === '-' || e.key === '_') {
             newScale = currentTransform.k / zoomFactor;
         }
 
+        // Clamp scale to reasonable limits
         newScale = Math.max(0.1, Math.min(3, newScale));
 
+        // Calculate the zoom center (center of viewport)
         const centerX = width / 2;
         const centerY = height / 2;
 
+        // Calculate new translation to zoom towards center
         const newX = centerX - (centerX - currentTransform.x) * (newScale / currentTransform.k);
         const newY = centerY - (centerY - currentTransform.y) * (newScale / currentTransform.k);
 
+        // Apply the new transform with smooth transition
         svg.transition()
             .duration(300)
             .call(zoom.transform, d3.zoomIdentity
                 .translate(newX, newY)
                 .scale(newScale));
+        return false;
     }
-});
+}, true);
 
 // =======================================================
 // PREVENT BROWSER ZOOM (Allow only D3 zoom on chart)
@@ -1227,7 +1340,7 @@ initialize();
 
 // Handle window resize
 window.addEventListener('resize', function() {
-    // You can add resize handling if needed
+    // Add resize handling if needed
 });
 </script>
 
