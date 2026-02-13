@@ -37,9 +37,9 @@ RANGE_NAME = os.environ.get("SHEET_RANGE", "Admin_Sheet!A1:Z2000")
 # --- Security Config (UPDATED) ---
 # 1. Try to load from local secrets.py (Laptop Mode)
 try:
-    import secrets
-    app.secret_key = secrets.SECRET_KEY
-    ADMIN_PASSWORD = secrets.ADMIN_PASSWORD
+    from secrets import SECRET_KEY, ADMIN_PASSWORD
+    app.secret_key = SECRET_KEY
+    ADMIN_PASSWORD = ADMIN_PASSWORD
     logger.info("✅ Loaded passwords from local secrets.py")
 
 # 2. If secrets.py is missing (Render Mode), look in Environment Variables
