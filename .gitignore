@@ -22,6 +22,7 @@ build/
 .env.*
 oauth_client.json
 token.json
+secrets.py
 
 # OS files
 .DS_Store
