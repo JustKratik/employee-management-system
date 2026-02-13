@@ -1,10 +1,10 @@
 import os
 import json
 import logging
-from functools import lru_cache
+from functools import lru_cache, wraps
 from datetime import datetime
 
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory, render_template, session, redirect, url_for
 from flask_cors import CORS
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -15,7 +15,7 @@ from googleapiclient.errors import HttpError
 # APP SETUP
 # =============================================================
 app = Flask(__name__, static_folder="static")
-CORS(app)  # Allow cross-origin requests (useful for API consumers)
+CORS(app)  # Allow cross-origin requests
 
 # --- Logging ---
 logging.basicConfig(
@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =============================================================
-# CONFIGURATION  (env-var first, fallback to defaults)
+# CONFIGURATION
 # =============================================================
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 DEFAULT_SHEET_ID = os.environ.get(
@@ -34,30 +34,59 @@ DEFAULT_SHEET_ID = os.environ.get(
 )
 RANGE_NAME = os.environ.get("SHEET_RANGE", "Admin_Sheet!A1:Z2000")
 
+# --- Security Config (UPDATED) ---
+# 1. Try to load from local secrets.py (Laptop Mode)
+try:
+    import secrets
+    app.secret_key = secrets.SECRET_KEY
+    ADMIN_PASSWORD = secrets.ADMIN_PASSWORD
+    logger.info("✅ Loaded passwords from local secrets.py")
+
+# 2. If secrets.py is missing (Render Mode), look in Environment Variables
+except ImportError:
+    app.secret_key = os.environ.get("SECRET_KEY")
+    ADMIN_PASSWORD = os.environ.get("SITE_PASSWORD")
+    logger.info("☁️  Loaded passwords from Environment Variables")
+
+# Safety Check
+if not ADMIN_PASSWORD:
+    logger.warning("⚠️  WARNING: SITE_PASSWORD is not set! Login will be impossible.")
+
 
 # =============================================================
-# GOOGLE CREDENTIALS  (env-var → file → fail gracefully)
+# SECURITY DECORATOR
+# =============================================================
+def login_required(f):
+    """
+    A 'Decorator' that acts as a Security Guard.
+    It checks if the user has a 'logged_in' ticket in their session.
+    If not, it kicks them to the /login page.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+# =============================================================
+# GOOGLE CREDENTIALS
 # =============================================================
 _cached_creds = None
 
-
 def get_google_creds():
     """
-    Load Google OAuth2 credentials.
-    Priority:
-      1. GOOGLE_TOKEN_JSON  env-var  (for Render / Docker / CI)
-      2. token.json  file             (for local dev)
-    Automatically refreshes expired tokens.
+    Load Google OAuth2 credentials with caching and refresh logic.
     """
     global _cached_creds
 
-    # Return cached creds if still valid
     if _cached_creds and _cached_creds.valid:
         return _cached_creds
 
     creds = None
 
-    # --- 1. Try environment variable ---
+    # 1. Try environment variable
     token_json_str = os.environ.get("GOOGLE_TOKEN_JSON")
     if token_json_str:
         try:
@@ -67,7 +96,7 @@ def get_google_creds():
         except (json.JSONDecodeError, ValueError) as e:
             logger.error("Failed to parse GOOGLE_TOKEN_JSON: %s", e)
 
-    # --- 2. Fallback to token.json file ---
+    # 2. Fallback to token.json file
     if not creds and os.path.exists("token.json"):
         try:
             creds = Credentials.from_authorized_user_file("token.json", SCOPES)
@@ -75,18 +104,16 @@ def get_google_creds():
         except Exception as e:
             logger.error("Failed to load token.json: %s", e)
 
-    # --- 3. Refresh if expired ---
+    # 3. Refresh if expired
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 logger.info("Refreshed expired credentials")
-
-                # Persist refreshed token locally (only if using file-based auth)
+                # Update file if using file-based auth
                 if not token_json_str and os.path.exists("token.json"):
                     with open("token.json", "w") as f:
                         f.write(creds.to_json())
-                    logger.info("Saved refreshed token to token.json")
             except Exception as e:
                 logger.error("Failed to refresh credentials: %s", e)
                 return None
@@ -101,21 +128,43 @@ def get_google_creds():
 # =============================================================
 # ROUTES
 # =============================================================
+
+@app.route("/login", methods=['GET', 'POST'])
+def login():
+    """Serve the login page and handle password verification."""
+    error = None
+    if request.method == 'POST':
+        # Check against the configured password
+        if request.form.get('password') == ADMIN_PASSWORD:
+            session['logged_in'] = True
+            logger.info("User logged in successfully")
+            return redirect(url_for('index'))
+        else:
+            logger.warning("Failed login attempt")
+            error = 'Invalid Password'
+    
+    # Flask looks for this file in the 'templates' folder
+    return render_template('login.html', error=error)
+
+
+@app.route("/logout")
+def logout():
+    """Clear the session and send user back to login."""
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
+
 @app.route("/")
+@login_required  # <--- PROTECTED
 def index():
     """Serve the main organization chart page."""
-    return send_file("index.html")
+    return render_template("index.html")
 
 
 @app.route("/api/employees")
+@login_required  # <--- PROTECTED
 def get_employees():
-    """
-    Fetch employee data from Google Sheets.
-    Optional query params:
-      - sheet: Google Sheet ID (defaults to DEFAULT_SHEET_ID)
-      - range: Sheet range   (defaults to RANGE_NAME)
-    Returns JSON array of employee objects.
-    """
+    """Fetch employee data from Google Sheets."""
     logger.info("--- /api/employees request ---")
 
     creds = get_google_creds()
@@ -147,11 +196,9 @@ def get_employees():
         return jsonify([])
 
     headers = values[0]
-    logger.info("✅ %d rows fetched  |  Headers: %s", len(values), headers)
-
+    
     data = []
     for row in values[1:]:
-        # Pad short rows so every row has the same number of columns
         row += [""] * (len(headers) - len(row))
         data.append(dict(zip(headers, row)))
 
@@ -160,13 +207,12 @@ def get_employees():
 
 @app.route("/health")
 def health():
-    """Health check for Render / load-balancers / uptime monitors."""
+    """Health check (Publicly accessible)."""
     return jsonify({
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "version": "1.0.0",
     })
-
 
 # =============================================================
 # ERROR HANDLERS
@@ -175,12 +221,10 @@ def health():
 def not_found(e):
     return jsonify({"error": "Not found"}), 404
 
-
 @app.errorhandler(500)
 def server_error(e):
     logger.error("Internal server error: %s", e)
     return jsonify({"error": "Internal server error"}), 500
-
 
 # =============================================================
 # ENTRY POINT
@@ -188,5 +232,5 @@ def server_error(e):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    logger.info("Starting server on 0.0.0.0:%d  (debug=%s)", port, debug)
+    logger.info("Starting server on 0.0.0.0:%d (debug=%s)", port, debug)
     app.run(host="0.0.0.0", port=port, debug=debug)
