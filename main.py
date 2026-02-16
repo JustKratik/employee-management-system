@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from functools import wraps
 from datetime import datetime
 
@@ -41,7 +42,7 @@ DEFAULT_SHEET_ID = os.environ.get(
 )
 RANGE_NAME = os.environ.get("SHEET_RANGE", "Admin_Sheet")
 
-# UPDATED: Look for emails in Column B of the 'Access' tab
+# Look for emails in Column B of the 'Access' tab
 ACCESS_SHEET_RANGE = "Access!B:B"
 
 # 2. Security Keys (Load from secrets.py or Environment)
@@ -54,7 +55,7 @@ except (ImportError, AttributeError):
     logger.info("☁️  Loaded SECRET_KEY from Environment")
 
 # =============================================================
-# OAUTH SETUP (The "Bulletproof" Fix)
+# OAUTH SETUP
 # =============================================================
 oauth = OAuth(app)
 
@@ -110,8 +111,13 @@ else:
 
 
 # =============================================================
-# HELPER: GOOGLE SHEETS & ACCESS CONTROL
+# HELPER: GOOGLE SHEETS & ACCESS CONTROL (WITH CACHE)
 # =============================================================
+# --- Global Cache Variables ---
+CACHED_ALLOWED_EMAILS = set()  # Store valid emails here
+LAST_CACHE_UPDATE = 0          # Time of last update
+CACHE_DURATION = 60            # Keep cache valid for 60 seconds
+
 def get_google_creds():
     """Load Service Account Credentials for reading the Sheets."""
     creds = None
@@ -144,42 +150,55 @@ def get_google_creds():
 
 def check_user_access(email):
     """
-    Check if the email exists in Column B of the 'Access' sheet tab.
-    Returns True if allowed, False if denied.
+    Check if email is authorized. Uses a cache to avoid hitting Google API too often.
     """
-    creds = get_google_creds()
-    if not creds:
-        logger.error("Cannot check access: Server credentials missing")
-        return False
-
-    try:
-        service = build("sheets", "v4", credentials=creds)
-        # Fetch Column B from 'Access' tab
-        result = service.spreadsheets().values().get(
-            spreadsheetId=DEFAULT_SHEET_ID, range=ACCESS_SHEET_RANGE
-        ).execute()
+    global CACHED_ALLOWED_EMAILS, LAST_CACHE_UPDATE
+    
+    current_time = time.time()
+    
+    # --- 1. Check Cache Validity (Is cache expired or empty?) ---
+    if not CACHED_ALLOWED_EMAILS or (current_time - LAST_CACHE_UPDATE > CACHE_DURATION):
+        logger.info("🔄 Refreshing Allowed Emails Cache from Google Sheet...")
         
-        rows = result.get("values", [])
-        
-        # Clean and Check:
-        # 1. Flatten list of lists: [['email1'], ['email2']] -> ['email1', 'email2']
-        # 2. Strip whitespace and lowercase for safety
-        allowed_emails = [str(r[0]).strip().lower() for r in rows if r]
-        
-        user_email = str(email).strip().lower()
-        
-        if user_email in allowed_emails:
-            return True
-        else:
-            logger.warning(f"⛔ Access denied for: {user_email}")
+        creds = get_google_creds()
+        if not creds:
+            logger.error("Cannot check access: Server credentials missing")
+            # If API fails, maybe keep old cache as fallback? Let's play it safe and return False.
             return False
+
+        try:
+            service = build("sheets", "v4", credentials=creds)
+            # Fetch Column B from 'Access' tab
+            result = service.spreadsheets().values().get(
+                spreadsheetId=DEFAULT_SHEET_ID, range=ACCESS_SHEET_RANGE
+            ).execute()
             
-    except Exception as e:
-        logger.error(f"Error reading Access sheet: {e}")
+            rows = result.get("values", [])
+            
+            # --- UPDATE CACHE ---
+            # Create a set for fast lookup (O(1))
+            new_allowed_emails = {str(r[0]).strip().lower() for r in rows if r}
+            CACHED_ALLOWED_EMAILS = new_allowed_emails
+            LAST_CACHE_UPDATE = current_time
+            logger.info(f"✅ Cache Updated. Total Authorized Users: {len(CACHED_ALLOWED_EMAILS)}")
+            
+        except Exception as e:
+            logger.error(f"Error reading Access sheet: {e}")
+            # If Google fails, return False unless we have a stale cache?
+            # For security, failing is safer than allowing unintended access.
+            return False
+
+    # --- 2. Check the (Cached) List ---
+    user_email = str(email).strip().lower()
+    
+    if user_email in CACHED_ALLOWED_EMAILS:
+        return True
+    else:
+        logger.warning(f"⛔ Access denied for: {user_email}")
         return False
 
 # =============================================================
-# SECURITY DECORATOR
+# SECURITY DECORATOR (UPDATED TO RE-CHECK ACCESS)
 # =============================================================
 def login_required(f):
     @wraps(f)
@@ -187,8 +206,34 @@ def login_required(f):
         user = session.get('user')
         if not user:
             return redirect(url_for('login'))
+        
+        # --- NEW: CONTINUOUS AUTHORIZATION CHECK ---
+        # Even if logged in, we check the sheet (via cache) on EVERY request.
+        # This allows us to revoke access instantly by removing email from sheet.
+        email = user.get('email')
+        if not check_user_access(email):
+            # User was logged in, but is no longer on the list!
+            logger.warning(f"🚫 Session Revoked: {email} removed from Access Sheet")
+            session.clear() # Destroy the session cookie immediately
+            return get_access_denied_html(email)
+
         return f(*args, **kwargs)
     return decorated_function
+
+def get_access_denied_html(email):
+    """Returns the standard Access Denied HTML page."""
+    return f"""
+    <div style="text-align:center; padding-top:50px; font-family:sans-serif;">
+        <h1 style="color:red;">Access Denied</h1>
+        <p>The email <b>{email}</b> is not on the authorized list.</p>
+        <p>Please contact the administrator to request access.</p>
+        <br>
+        <a href="/login?prompt=select_account" 
+           style="background-color:#4285F4; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">
+           Try a different account
+        </a>
+    </div>
+    """
 
 # =============================================================
 # ROUTES
@@ -248,19 +293,7 @@ def auth_callback():
             logger.info(f"✅ Access granted: {email}")
             return redirect(url_for('index'))
         else:
-            # --- UPDATED ERROR PAGE WITH WORKING BUTTON ---
-            return f"""
-            <div style="text-align:center; padding-top:50px; font-family:sans-serif;">
-                <h1 style="color:red;">Access Denied</h1>
-                <p>The email <b>{email}</b> is not on the authorized list.</p>
-                <p>Please contact the administrator to request access.</p>
-                <br>
-                <a href="/login?prompt=select_account" 
-                   style="background-color:#4285F4; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">
-                   Try a different account
-                </a>
-            </div>
-            """
+            return get_access_denied_html(email)
             
     except Exception as e:
         logger.error(f"Login failed: {e}")
@@ -302,7 +335,7 @@ def get_employees():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.0.0"})
+    return jsonify({"status": "ok", "version": "2.1.0"})
 
 # =============================================================
 # ERROR HANDLERS & ENTRY
