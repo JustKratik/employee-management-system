@@ -203,15 +203,30 @@ def index():
 
 @app.route("/login")
 def login():
-    """Start the Google Login process."""
-    redirect_uri = url_for('auth_callback', _external=True)
+    """Start the Google Login process with Debugging."""
+    try:
+        # 1. Print to logs so we know we got here
+        logger.info("🚀 STARTING LOGIN PROCESS...")
 
-    # --- UPDATED LOGIC FOR "TRY DIFFERENT ACCOUNT" ---
-    # If the user clicks the "Try a different account" link, we force Google to show the menu
-    if request.args.get('prompt') == 'select_account':
-        return oauth.google.authorize_redirect(redirect_uri, prompt='select_account')
+        # 2. Check if the keys loaded correctly
+        if not oauth.google:
+            raise ValueError("OAuth client not registered! Check GOOGLE_CLIENT_SECRET_JSON.")
 
-    return oauth.google.authorize_redirect(redirect_uri)
+        # 3. Build the redirect
+        redirect_uri = url_for('auth_callback', _external=True)
+
+        # 4. Handle the 'Try different account' logic
+        if request.args.get('prompt') == 'select_account':
+            return oauth.google.authorize_redirect(redirect_uri, prompt='select_account')
+        
+        return oauth.google.authorize_redirect(redirect_uri)
+
+    except Exception as e:
+        # --- THE TRAP: Print the real error to the logs AND the browser ---
+        logger.error(f"🔥 CRITICAL LOGIN ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()  # This forces the Python error into the Render logs
+        return f"<h1>DEBUG ERROR:</h1><p>{str(e)}</p>", 500
 
 @app.route("/callback")
 def auth_callback():
