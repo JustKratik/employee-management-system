@@ -23,6 +23,7 @@ build/
 oauth_client.json
 token.json
 secrets.py
+google_client_secret.json
 
 # OS files
 .DS_Store
