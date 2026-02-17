@@ -381,7 +381,8 @@ const DEPT_BLACKLIST = [
     "Operations- Installer Non-Dedicated",
     "Operations- Installer",
     "Test-Department-prime-Chat",
-    "Testing_department"
+    "Testing_department",
+    '-'
 ];
 
 // Grade order for sorting children
@@ -1343,6 +1344,40 @@ initialize();
 window.addEventListener('resize', function() {
     // Add resize handling if needed
 });
+</script>
+
+<script>
+    // Heartbeat: Check status every 10 seconds
+    setInterval(function() {
+        fetch('/api/heartbeat')
+        .then(response => {
+            // Check 1: If the server explicitly says "Forbidden" or "Unauthorized"
+            if (response.status === 401 || response.status === 403) {
+                window.location.reload();
+                return;
+            }
+            
+            // Check 2: If we get a "Success" (200), let's make sure it's actually JSON!
+            // If the server returns the HTML "Access Denied" page, this line will fail.
+            return response.json(); 
+        })
+        .then(data => {
+            // If we are here, it means we got valid JSON.
+            // Double check the status message just in case.
+            if (data && data.status === "active") {
+                console.log("Session active.");
+            } else {
+                // If data is weird or missing, reload just to be safe.
+                window.location.reload();
+            }
+        })
+        .catch(error => {
+            // This catches the JSON parse error!
+            // If response.json() fails (because we got HTML), code jumps here.
+            console.warn("Heartbeat failed (likely Access Denied HTML received). Reloading...");
+            window.location.reload();
+        });
+    }, 30000); // Check every 10 seconds
 </script>
 
 </body>
