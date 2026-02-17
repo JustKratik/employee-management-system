@@ -337,6 +337,17 @@ def get_employees():
 def health():
     return jsonify({"status": "ok", "version": "2.1.0"})
 
+# --- NEW HEARTBEAT ROUTE ---
+@app.route("/api/heartbeat")
+@login_required
+def heartbeat():
+    """
+    Lightweight check.
+    If @login_required passes, it means User is IN the cache (or Sheet).
+    If it fails, @login_required aborts and returns 403/Redirect.
+    """
+    return jsonify({"status": "active"}), 200
+
 # =============================================================
 # ERROR HANDLERS & ENTRY
 # =============================================================
